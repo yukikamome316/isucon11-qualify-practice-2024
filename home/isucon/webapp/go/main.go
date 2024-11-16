@@ -1121,7 +1121,17 @@ func getTrend(c echo.Context) error {
 		}
 
 		conditions := []IsuCondition{}
-		query, args, err := sqlx.In("SELECT * FROM `isu_condition` WHERE `jia_isu_uuid` IN (?) ORDER BY `timestamp` DESC", isuUUIDs)
+		query, args, err := sqlx.In(`
+			SELECT ic.*
+			FROM (
+				SELECT jia_isu_uuid, MAX(timestamp) as max_timestamp
+				FROM isu_condition
+				WHERE jia_isu_uuid IN (?)
+				GROUP BY jia_isu_uuid
+			) as latest
+			JOIN isu_condition ic
+			ON ic.jia_isu_uuid = latest.jia_isu_uuid AND ic.timestamp = latest.max_timestamp
+			ORDER BY ic.timestamp DESC`, isuUUIDs)
 		if err != nil {
 			c.Logger().Errorf("db error: %v", err)
 			return c.NoContent(http.StatusInternalServerError)
@@ -1135,9 +1145,7 @@ func getTrend(c echo.Context) error {
 
 		conditionMap := make(map[string]IsuCondition)
 		for _, condition := range conditions {
-			if _, exists := conditionMap[condition.JIAIsuUUID]; !exists {
-				conditionMap[condition.JIAIsuUUID] = condition
-			}
+			conditionMap[condition.JIAIsuUUID] = condition
 		}
 
 		characterInfoIsuConditions := []*TrendCondition{}
