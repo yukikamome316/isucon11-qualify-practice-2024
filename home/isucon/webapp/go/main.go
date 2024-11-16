@@ -13,7 +13,6 @@ import (
 	_ "net/http/pprof"
 	"os"
 	"os/exec"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -1083,82 +1082,67 @@ func calculateConditionLevel(condition string) (string, error) {
 // GET /api/trend
 // ISUの性格毎の最新のコンディション情報
 func getTrend(c echo.Context) error {
-	characterList := []Isu{}
-	err := db.Select(&characterList, "SELECT `character` FROM `isu` GROUP BY `character`")
+	type CharacterCondition struct {
+		Character string `db:"character"`
+		ID        int    `db:"id"`
+		Timestamp int64  `db:"timestamp"`
+		Level     string `db:"level"`
+	}
+
+	characterConditions := []CharacterCondition{}
+	err := db.Select(&characterConditions, `
+		SELECT i.character, ic.id, UNIX_TIMESTAMP(ic.timestamp) as timestamp,
+		CASE
+			WHEN ic.condition LIKE '%=true%' THEN 'critical'
+			WHEN ic.condition LIKE '%=true%' THEN 'warning'
+			ELSE 'info'
+		END as level
+		FROM isu i
+		JOIN isu_condition ic ON i.jia_isu_uuid = ic.jia_isu_uuid
+		WHERE ic.timestamp = (
+			SELECT MAX(timestamp)
+			FROM isu_condition
+			WHERE jia_isu_uuid = i.jia_isu_uuid
+		)
+		ORDER BY ic.timestamp DESC
+	`)
 	if err != nil {
 		c.Logger().Errorf("db error: %v", err)
 		return c.NoContent(http.StatusInternalServerError)
 	}
 
-	query := "SELECT i.`character`, i.id, ic.jia_isu_uuid, ic.timestamp, ic.condition " +
-		"FROM isu i " +
-		"JOIN ( " +
-		"	SELECT jia_isu_uuid, MAX(timestamp) AS latest_timestamp " +
-		"	FROM isu_condition " +
-		"	GROUP BY jia_isu_uuid " +
-		") AS latest_ic ON i.jia_isu_uuid = latest_ic.jia_isu_uuid " +
-		"JOIN isu_condition ic ON latest_ic.jia_isu_uuid = ic.jia_isu_uuid AND latest_ic.latest_timestamp = ic.timestamp " +
-		"ORDER BY ic.timestamp DESC"
-
-	rows, err := db.Queryx(query)
-	if err != nil {
-		c.Logger().Errorf("db error: %v", err)
-		return c.NoContent(http.StatusInternalServerError)
-	}
-	defer rows.Close()
-
-	characterMap := make(map[string]map[string][]*TrendCondition)
-	for rows.Next() {
-		var character string
-		var isuID int
-		var jiaIsuUUID string
-		var timestamp time.Time
-		var condition string
-
-		err := rows.Scan(&character, &isuID, &jiaIsuUUID, &timestamp, &condition)
-		if err != nil {
-			c.Logger().Errorf("db error: %v", err)
-			return c.NoContent(http.StatusInternalServerError)
-		}
-
-		conditionLevel, err := calculateConditionLevel(condition)
-		if err != nil {
-			c.Logger().Error(err)
-			return c.NoContent(http.StatusInternalServerError)
+	trendMap := make(map[string]*TrendResponse)
+	for _, cc := range characterConditions {
+		if _, ok := trendMap[cc.Character]; !ok {
+			trendMap[cc.Character] = &TrendResponse{
+				Character: cc.Character,
+				Info:      []*TrendCondition{},
+				Warning:   []*TrendCondition{},
+				Critical:  []*TrendCondition{},
+			}
 		}
 
 		trendCondition := &TrendCondition{
-			ID:        isuID,
-			Timestamp: timestamp.Unix(),
+			ID:        cc.ID,
+			Timestamp: cc.Timestamp,
 		}
 
-		if characterMap[character] == nil {
-			characterMap[character] = make(map[string][]*TrendCondition)
+		switch cc.Level {
+		case "info":
+			trendMap[cc.Character].Info = append(trendMap[cc.Character].Info, trendCondition)
+		case "warning":
+			trendMap[cc.Character].Warning = append(trendMap[cc.Character].Warning, trendCondition)
+		case "critical":
+			trendMap[cc.Character].Critical = append(trendMap[cc.Character].Critical, trendCondition)
 		}
-		characterMap[character][conditionLevel] = append(characterMap[character][conditionLevel], trendCondition)
 	}
 
-	res := []TrendResponse{}
-	for character, conditions := range characterMap {
-		sort.Slice(conditions["info"], func(i, j int) bool {
-			return conditions["info"][i].Timestamp > conditions["info"][j].Timestamp
-		})
-		sort.Slice(conditions["warning"], func(i, j int) bool {
-			return conditions["warning"][i].Timestamp > conditions["warning"][j].Timestamp
-		})
-		sort.Slice(conditions["critical"], func(i, j int) bool {
-			return conditions["critical"][i].Timestamp > conditions["critical"][j].Timestamp
-		})
-
-		res = append(res, TrendResponse{
-			Character: character,
-			Info:      conditions["info"],
-			Warning:   conditions["warning"],
-			Critical:  conditions["critical"],
-		})
+	trendList := []*TrendResponse{}
+	for _, trend := range trendMap {
+		trendList = append(trendList, trend)
 	}
 
-	return c.JSON(http.StatusOK, res)
+	return c.JSON(http.StatusOK, trendList)
 }
 
 // POST /api/condition/:jia_isu_uuid
