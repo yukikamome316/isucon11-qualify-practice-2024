@@ -1090,72 +1090,73 @@ func getTrend(c echo.Context) error {
 		return c.NoContent(http.StatusInternalServerError)
 	}
 
-	res := []TrendResponse{}
+	query := `
+		SELECT i.character, i.id, ic.jia_isu_uuid, ic.timestamp, ic.condition
+		FROM isu i
+		JOIN (
+			SELECT jia_isu_uuid, MAX(timestamp) AS latest_timestamp
+			FROM isu_condition
+			GROUP BY jia_isu_uuid
+		) latest_ic ON i.jia_isu_uuid = latest_ic.jia_isu_uuid
+		JOIN isu_condition ic ON latest_ic.jia_isu_uuid = ic.jia_isu_uuid AND latest_ic.latest_timestamp = ic.timestamp
+		ORDER BY ic.timestamp DESC
+	`
+	rows, err := db.Queryx(query)
+	if err != nil {
+		c.Logger().Errorf("db error: %v", err)
+		return c.NoContent(http.StatusInternalServerError)
+	}
+	defer rows.Close()
 
-	for _, character := range characterList {
-		isuList := []Isu{}
-		err = db.Select(&isuList,
-			"SELECT * FROM `isu` WHERE `character` = ?",
-			character.Character,
-		)
+	characterMap := make(map[string]map[string][]*TrendCondition)
+	for rows.Next() {
+		var character string
+		var isuID int
+		var jiaIsuUUID string
+		var timestamp time.Time
+		var condition string
+
+		err := rows.Scan(&character, &isuID, &jiaIsuUUID, &timestamp, &condition)
 		if err != nil {
 			c.Logger().Errorf("db error: %v", err)
 			return c.NoContent(http.StatusInternalServerError)
 		}
 
-		characterInfoIsuConditions := []*TrendCondition{}
-		characterWarningIsuConditions := []*TrendCondition{}
-		characterCriticalIsuConditions := []*TrendCondition{}
-		for _, isu := range isuList {
-			conditions := []IsuCondition{}
-			err = db.Select(&conditions,
-				"SELECT * FROM `isu_condition` WHERE `jia_isu_uuid` = ? ORDER BY timestamp DESC",
-				isu.JIAIsuUUID,
-			)
-			if err != nil {
-				c.Logger().Errorf("db error: %v", err)
-				return c.NoContent(http.StatusInternalServerError)
-			}
-
-			if len(conditions) > 0 {
-				isuLastCondition := conditions[0]
-				conditionLevel, err := calculateConditionLevel(isuLastCondition.Condition)
-				if err != nil {
-					c.Logger().Error(err)
-					return c.NoContent(http.StatusInternalServerError)
-				}
-				trendCondition := TrendCondition{
-					ID:        isu.ID,
-					Timestamp: isuLastCondition.Timestamp.Unix(),
-				}
-				switch conditionLevel {
-				case "info":
-					characterInfoIsuConditions = append(characterInfoIsuConditions, &trendCondition)
-				case "warning":
-					characterWarningIsuConditions = append(characterWarningIsuConditions, &trendCondition)
-				case "critical":
-					characterCriticalIsuConditions = append(characterCriticalIsuConditions, &trendCondition)
-				}
-			}
-
+		conditionLevel, err := calculateConditionLevel(condition)
+		if err != nil {
+			c.Logger().Error(err)
+			return c.NoContent(http.StatusInternalServerError)
 		}
 
-		sort.Slice(characterInfoIsuConditions, func(i, j int) bool {
-			return characterInfoIsuConditions[i].Timestamp > characterInfoIsuConditions[j].Timestamp
+		trendCondition := &TrendCondition{
+			ID:        isuID,
+			Timestamp: timestamp.Unix(),
+		}
+
+		if characterMap[character] == nil {
+			characterMap[character] = make(map[string][]*TrendCondition)
+		}
+		characterMap[character][conditionLevel] = append(characterMap[character][conditionLevel], trendCondition)
+	}
+
+	res := []TrendResponse{}
+	for character, conditions := range characterMap {
+		sort.Slice(conditions["info"], func(i, j int) bool {
+			return conditions["info"][i].Timestamp > conditions["info"][j].Timestamp
 		})
-		sort.Slice(characterWarningIsuConditions, func(i, j int) bool {
-			return characterWarningIsuConditions[i].Timestamp > characterWarningIsuConditions[j].Timestamp
+		sort.Slice(conditions["warning"], func(i, j int) bool {
+			return conditions["warning"][i].Timestamp > conditions["warning"][j].Timestamp
 		})
-		sort.Slice(characterCriticalIsuConditions, func(i, j int) bool {
-			return characterCriticalIsuConditions[i].Timestamp > characterCriticalIsuConditions[j].Timestamp
+		sort.Slice(conditions["critical"], func(i, j int) bool {
+			return conditions["critical"][i].Timestamp > conditions["critical"][j].Timestamp
 		})
-		res = append(res,
-			TrendResponse{
-				Character: character.Character,
-				Info:      characterInfoIsuConditions,
-				Warning:   characterWarningIsuConditions,
-				Critical:  characterCriticalIsuConditions,
-			})
+
+		res = append(res, TrendResponse{
+			Character: character,
+			Info:      conditions["info"],
+			Warning:   conditions["warning"],
+			Critical:  conditions["critical"],
+		})
 	}
 
 	return c.JSON(http.StatusOK, res)
