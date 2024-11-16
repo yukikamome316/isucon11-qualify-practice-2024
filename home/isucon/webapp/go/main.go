@@ -1091,7 +1091,11 @@ func getTrend(c echo.Context) error {
 	}
 
 	characterMap := make(map[string][]Isu)
-	query, args, err := sqlx.In("SELECT * FROM `isu` WHERE `character` IN (?)", characterList)
+	characterNames := []string{}
+	for _, isu := range characterList {
+		characterNames = append(characterNames, isu.Character)
+	}
+	query, args, err := sqlx.In("SELECT * FROM `isu` WHERE `character` IN (?)", characterNames)
 	if err != nil {
 		c.Logger().Errorf("db error: %v", err)
 		return c.NoContent(http.StatusInternalServerError)
