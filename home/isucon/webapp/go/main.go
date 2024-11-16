@@ -13,7 +13,6 @@ import (
 	_ "net/http/pprof"
 	"os"
 	"os/exec"
-	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -209,12 +208,6 @@ func init() {
 }
 
 func main() {
-	runtime.SetBlockProfileRate(1)
-	runtime.SetMutexProfileFraction(1)
-	go func() {
-		log.Fatal(http.ListenAndServe("localhost:6060", nil))
-	}()
-
 	e := echo.New()
 	e.Debug = true
 	e.Logger.SetLevel(log.DEBUG)
@@ -260,6 +253,11 @@ func main() {
 		e.Logger.Fatalf("missing: POST_ISUCONDITION_TARGET_BASE_URL")
 		return
 	}
+
+	// pprof
+	go func() {
+		log.Fatal(http.ListenAndServe("localhost:6060", nil))
+	}()
 
 	serverPort := fmt.Sprintf(":%v", getEnv("SERVER_APP_PORT", "3000"))
 	e.Logger.Fatal(e.Start(serverPort))
