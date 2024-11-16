@@ -1097,7 +1097,7 @@ func getTrend(c echo.Context) error {
 			SELECT jia_isu_uuid, MAX(timestamp) AS latest_timestamp
 			FROM isu_condition
 			GROUP BY jia_isu_uuid
-		) latest_ic ON i.jia_isu_uuid = latest_ic.jia_isu_uuid
+		) AS latest_ic ON i.jia_isu_uuid = latest_ic.jia_isu_uuid
 		JOIN isu_condition ic ON latest_ic.jia_isu_uuid = ic.jia_isu_uuid AND latest_ic.latest_timestamp = ic.timestamp
 		ORDER BY ic.timestamp DESC
 	`
